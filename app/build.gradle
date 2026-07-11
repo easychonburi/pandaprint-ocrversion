@@ -11,8 +11,8 @@ android {
         applicationId "com.easy.linemanprint"
         minSdk 24
         targetSdk 34
-        versionCode 4
-        versionName "0.4.0-grab-ocr-anchor"
+        versionCode 5
+        versionName "0.4.1-grab-ocr-anchor"
     }
 
     buildTypes {
