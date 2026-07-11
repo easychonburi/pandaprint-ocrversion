@@ -7,30 +7,31 @@ import com.googlecode.tesseract.android.TessBaseAPI
 import java.io.File
 import java.io.FileOutputStream
 
-// อ่านเฉพาะภาพหน้าจอ Grab บนเครื่อง เพื่อชดเชยส่วนรายการอาหารที่ Grab
-// ไม่เปิดให้ Accessibility อ่านได้ ข้อมูลภาพและข้อความไม่ถูกส่งออกจากมือถือ
+// OCR ของ Grab ทำงานบนมือถือทั้งหมด ภาพหน้าจอและข้อความไม่ถูกส่งออกจากเครื่อง
 object GrabScreenOcr {
 
     private const val DATA_DIR = "panda_tesseract"
     private const val ASSET_DATA = "tessdata/tha.traineddata"
+    private const val MODEL_VERSION = "tha-best-v3"
 
     fun makeDebugOrder(context: Context, grabCode: String, bitmap: Bitmap): Order {
-        val result = try {
-            // ส่วนหัวของ Grab มีเวลา/สถานะ/รหัสจองเยอะและทำให้ OCR สับสน
-            // เราจึงอ่านเฉพาะช่วงกลางถึงล่างที่มีรายการอาหารและยอดเงิน
-            val prepared = prepareOrderArea(bitmap)
-            val text = try {
-                recognize(context, prepared)
-            } finally {
-                prepared.recycle()
-            }
-            val lines = text.lineSequence()
-                .map { it.trim().replace(Regex("\\s+"), " ") }
-                .filter { it.isNotEmpty() }
-                .take(24)
-                .toList()
+        val output = try {
+            // อ่านแยกสอง block เพื่อไม่ให้รหัสจอง/สถานะ/ข้อความส่วนหัวรบกวนชื่อเมนู
+            val menuLines = readBlock(
+                context, bitmap, topFraction = 0.47f, bottomFraction = 0.79f,
+                pageMode = TessBaseAPI.PageSegMode.PSM_AUTO
+            )
+            val amountLines = readBlock(
+                context, bitmap, topFraction = 0.76f, bottomFraction = 0.94f,
+                pageMode = TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT
+            )
 
-            if (lines.isEmpty()) listOf("[OCR ไม่พบข้อความ]") else lines
+            buildList {
+                add("[เมนู / ตัวเลือก]")
+                addAll(menuLines.ifEmpty { listOf("ไม่พบข้อความ") })
+                add("[ยอดเงิน]")
+                addAll(amountLines.ifEmpty { listOf("ไม่พบข้อความ") })
+            }
         } catch (e: Exception) {
             listOf("[OCR error: ${e.message ?: e.javaClass.simpleName}]")
         }
@@ -42,25 +43,50 @@ object GrabScreenOcr {
             dateTime = "",
             customer = "",
             isNewCustomer = false,
-            items = result.mapIndexed { index, line ->
+            items = output.take(24).mapIndexed { index, line ->
                 OrderItem(index + 1, line.take(90), "")
             },
-            note = "*** GRAB OCR V2: เฉพาะโซนรายการ/ยอดเงิน ***",
+            note = "*** GRAB OCR V3.1: เมนูและยอดเงินแยกกันอ่าน ***",
             payment = "",
             subtotal = "",
             discount = "",
             net = "",
             parsedOk = true,
-            platform = "GRAB-OCR"
+            platform = "GRAB-OCR V3.1"
         )
     }
 
-    private fun recognize(context: Context, bitmap: Bitmap): String {
-        val dataPath = ensureThaiData(context)
+    private fun readBlock(
+        context: Context,
+        source: Bitmap,
+        topFraction: Float,
+        bottomFraction: Float,
+        // Tesseract4Android exposes PSM constants as Int values.
+        pageMode: Int
+    ): List<String> {
+        val prepared = prepareBlock(source, topFraction, bottomFraction)
+        val text = try {
+            recognize(context, prepared, pageMode)
+        } finally {
+            prepared.recycle()
+        }
+        return text.lineSequence()
+            .map { it.trim().replace(Regex("\\s+"), " ") }
+            .filter { it.isNotEmpty() }
+            .toList()
+    }
+
+    private fun recognize(
+        context: Context,
+        bitmap: Bitmap,
+        pageMode: Int
+    ): String {
         val tess = TessBaseAPI()
         try {
-            check(tess.init(dataPath, "tha")) { "เปิดโมเดล OCR ภาษาไทยไม่สำเร็จ" }
-            tess.setPageSegMode(TessBaseAPI.PageSegMode.PSM_AUTO)
+            check(tess.init(ensureThaiData(context), "tha")) {
+                "เปิดโมเดล OCR ภาษาไทยไม่สำเร็จ"
+            }
+            tess.setPageSegMode(pageMode)
             tess.setImage(bitmap)
             return tess.getUTF8Text()
         } finally {
@@ -68,11 +94,11 @@ object GrabScreenOcr {
         }
     }
 
-    // Grab ใช้หน้าจอแนวตั้งคงที่พอสมควร: ตัดแถบสถานะ/ส่วนหัวด้านบนออก
-    // แล้วขยาย + ทำขาวดำ เพื่อลด noise ก่อนส่งให้ OCR ภาษาไทย
-    private fun prepareOrderArea(source: Bitmap): Bitmap {
-        val top = (source.height * 0.30f).toInt()
-        val bottom = (source.height * 0.95f).toInt()
+    // ใช้ภาพเทา contrast สูงแทนการ threshold ขาว/ดำทั้งภาพ เพราะวรรณยุกต์ไทย
+    // และเส้นบางของ ก/ค สูญหายได้ง่ายเมื่อบีบเป็นขาวดำเร็วเกินไป
+    private fun prepareBlock(source: Bitmap, topFraction: Float, bottomFraction: Float): Bitmap {
+        val top = (source.height * topFraction).toInt().coerceIn(0, source.height - 1)
+        val bottom = (source.height * bottomFraction).toInt().coerceIn(top + 1, source.height)
         val crop = Bitmap.createBitmap(source, 0, top, source.width, bottom - top)
         val scaled = Bitmap.createScaledBitmap(crop, crop.width * 2, crop.height * 2, true)
         crop.recycle()
@@ -82,14 +108,14 @@ object GrabScreenOcr {
         val pixels = IntArray(width * height)
         scaled.getPixels(pixels, 0, width, 0, 0, width, height)
 
-        // ตัวอักษรของ Grab เป็นดำ/เทา/ฟ้าอ่อนบนพื้นเกือบขาว
-        // threshold ทำให้ Tesseract แยกตัวอักษรไทยจากพื้นหลังได้ง่ายขึ้น
         for (i in pixels.indices) {
             val color = pixels[i]
             val luminance = (
                 Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114
             ) / 1000
-            pixels[i] = if (luminance < 205) Color.BLACK else Color.WHITE
+            // เพิ่ม contrast แต่ยังคงระดับเทาเพื่อรักษาวรรณยุกต์และเส้นตัวอักษร
+            val contrasted = ((luminance - 128) * 1.45f + 128).toInt().coerceIn(0, 255)
+            pixels[i] = Color.rgb(contrasted, contrasted, contrasted)
         }
 
         val prepared = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
@@ -99,15 +125,19 @@ object GrabScreenOcr {
     }
 
     // Tesseract ต้องอ่าน model จาก storage ภายในของแอป ไม่สามารถอ่านตรงจาก APK ได้
+    // version marker บังคับอัปเกรดจาก model fast รุ่นก่อนเป็น model best รุ่นนี้
     private fun ensureThaiData(context: Context): String {
         val root = File(context.filesDir, DATA_DIR)
         val tessData = File(root, "tessdata")
         val target = File(tessData, "tha.traineddata")
-        if (!target.exists()) {
+        val marker = File(root, "model_version.txt")
+        val mustCopy = !target.exists() || !marker.exists() || marker.readText() != MODEL_VERSION
+        if (mustCopy) {
             check(tessData.exists() || tessData.mkdirs()) { "สร้างโฟลเดอร์ OCR ไม่สำเร็จ" }
             context.assets.open(ASSET_DATA).use { input ->
                 FileOutputStream(target).use { output -> input.copyTo(output) }
             }
+            marker.writeText(MODEL_VERSION)
         }
         return root.absolutePath
     }
