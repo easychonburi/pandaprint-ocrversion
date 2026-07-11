@@ -2,6 +2,7 @@ package com.easy.linemanprint
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Color
 import com.googlecode.tesseract.android.TessBaseAPI
 import java.io.File
 import java.io.FileOutputStream
@@ -15,11 +16,18 @@ object GrabScreenOcr {
 
     fun makeDebugOrder(context: Context, grabCode: String, bitmap: Bitmap): Order {
         val result = try {
-            val text = recognize(context, bitmap)
+            // ส่วนหัวของ Grab มีเวลา/สถานะ/รหัสจองเยอะและทำให้ OCR สับสน
+            // เราจึงอ่านเฉพาะช่วงกลางถึงล่างที่มีรายการอาหารและยอดเงิน
+            val prepared = prepareOrderArea(bitmap)
+            val text = try {
+                recognize(context, prepared)
+            } finally {
+                prepared.recycle()
+            }
             val lines = text.lineSequence()
                 .map { it.trim().replace(Regex("\\s+"), " ") }
                 .filter { it.isNotEmpty() }
-                .take(28)
+                .take(24)
                 .toList()
 
             if (lines.isEmpty()) listOf("[OCR ไม่พบข้อความ]") else lines
@@ -37,7 +45,7 @@ object GrabScreenOcr {
             items = result.mapIndexed { index, line ->
                 OrderItem(index + 1, line.take(90), "")
             },
-            note = "*** GRAB OCR DEBUG: ตรวจชื่อเมนู/จำนวน/ราคา ***",
+            note = "*** GRAB OCR V2: เฉพาะโซนรายการ/ยอดเงิน ***",
             payment = "",
             subtotal = "",
             discount = "",
@@ -58,6 +66,36 @@ object GrabScreenOcr {
         } finally {
             tess.recycle()
         }
+    }
+
+    // Grab ใช้หน้าจอแนวตั้งคงที่พอสมควร: ตัดแถบสถานะ/ส่วนหัวด้านบนออก
+    // แล้วขยาย + ทำขาวดำ เพื่อลด noise ก่อนส่งให้ OCR ภาษาไทย
+    private fun prepareOrderArea(source: Bitmap): Bitmap {
+        val top = (source.height * 0.30f).toInt()
+        val bottom = (source.height * 0.95f).toInt()
+        val crop = Bitmap.createBitmap(source, 0, top, source.width, bottom - top)
+        val scaled = Bitmap.createScaledBitmap(crop, crop.width * 2, crop.height * 2, true)
+        crop.recycle()
+
+        val width = scaled.width
+        val height = scaled.height
+        val pixels = IntArray(width * height)
+        scaled.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        // ตัวอักษรของ Grab เป็นดำ/เทา/ฟ้าอ่อนบนพื้นเกือบขาว
+        // threshold ทำให้ Tesseract แยกตัวอักษรไทยจากพื้นหลังได้ง่ายขึ้น
+        for (i in pixels.indices) {
+            val color = pixels[i]
+            val luminance = (
+                Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114
+            ) / 1000
+            pixels[i] = if (luminance < 205) Color.BLACK else Color.WHITE
+        }
+
+        val prepared = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        prepared.setPixels(pixels, 0, width, 0, 0, width, height)
+        scaled.recycle()
+        return prepared
     }
 
     // Tesseract ต้องอ่าน model จาก storage ภายในของแอป ไม่สามารถอ่านตรงจาก APK ได้
