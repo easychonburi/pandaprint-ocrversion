@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Panda Printer</string>
+    <string name="service_label">Panda Printer - พิมพ์ออเดอร์อัตโนมัติ</string>
+    <string name="service_desc">อ่านหน้าออเดอร์จากแอปเดลิเวอรี (LINE MAN, Grab) แล้วพิมพ์ใบเสร็จออกเครื่องพิมพ์บลูทูธอัตโนมัติ</string>
+</resources>
