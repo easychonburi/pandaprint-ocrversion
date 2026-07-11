@@ -69,13 +69,13 @@ object GrabScreenOcr {
             items = output.take(24).mapIndexed { index, line ->
                 OrderItem(index + 1, line.take(90), "")
             },
-            note = "*** GRAB OCR V4: หา anchor ก่อนตัดภาพ ***",
+            note = "*** GRAB OCR V4.1: หา anchor ก่อนตัดภาพ ***",
             payment = "",
             subtotal = "",
             discount = "",
             net = "",
             parsedOk = true,
-            platform = "GRAB-OCR V4"
+            platform = "GRAB-OCR V4.1"
         )
     }
 
@@ -114,8 +114,10 @@ object GrabScreenOcr {
         }
     }
 
+    // OCR บางครั้งแยก "1 x" กับชื่อเมนูออกเป็นคนละบรรทัด
+    // จึงใช้จำนวน x เป็น anchor ได้แม้ข้อความชื่อเมนูจะตามมาในบรรทัดถัดไป
     private fun isItemLine(text: String): Boolean =
-        Regex("^\\s*\\d+\\s*[xX×]\\s*.+").containsMatchIn(text)
+        Regex("^\\s*\\d+\\s*[xX×](?:\\s|$)").containsMatchIn(text)
 
     private fun readPrepared(context: Context, bitmap: Bitmap, pageMode: Int): List<String> {
         val text = recognize(context, bitmap, pageMode)
